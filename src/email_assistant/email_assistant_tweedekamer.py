@@ -47,7 +47,8 @@ llm_router = llm.with_structured_output(RouterSchema)
 
 # Initialize the LLM, enforcing tool use (of any available tools) for agent
 llm = init_chat_model("openai:gpt-4.1", temperature=0.0)
-llm_with_tools = llm.bind_tools(tools, tool_choice="auto")
+# Add strict tool choice to prevent multiple tool calls in server context
+llm_with_tools = llm.bind_tools(tools, tool_choice="auto", parallel_tool_calls=False)
 
 def get_memory(store, namespace, default_content=None):
     """Get memory from the store or initialize with default if it doesn't exist.
@@ -251,16 +252,33 @@ def llm_call(state: State, store: BaseStore):
     # Search for existing background memory
     background_info = get_memory(store, ("tweedekamer_assistant", "background"), tweedekamer_background)
 
+    # Circuit breaker: count tool calls made so far
+    tool_call_count = 0
+    for msg in state["messages"]:
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            tool_call_count += len(msg.tool_calls)
+    
+    # If we've made too many tool calls, force the LLM to provide final answer
+    if tool_call_count >= 2:  # Very conservative limit
+        # Force no more tools - only send_email_tool allowed
+        llm_restricted = llm.bind_tools([tools_by_name["send_email_tool"]], tool_choice="auto")
+        system_prompt = agent_system_prompt_tweedekamer.format(
+            tools_prompt="You have gathered enough information. Now use send_email_tool to provide your final answer to the user.",
+            background=background_info,
+            response_preferences=response_preferences
+        )
+    else:
+        llm_restricted = llm_with_tools
+        system_prompt = agent_system_prompt_tweedekamer.format(
+            tools_prompt=TOOLS_TWEEDEKAMER_PROMPT,
+            background=background_info,
+            response_preferences=response_preferences
+        )
+
     return {
         "messages": [
-            llm_with_tools.invoke(
-                [
-                    {"role": "system", "content": agent_system_prompt_tweedekamer.format(
-                        tools_prompt=TOOLS_TWEEDEKAMER_PROMPT,
-                        background=background_info,
-                        response_preferences=response_preferences
-                    )}
-                ]
+            llm_restricted.invoke(
+                [{"role": "system", "content": system_prompt}]
                 + state["messages"]
             )
         ]

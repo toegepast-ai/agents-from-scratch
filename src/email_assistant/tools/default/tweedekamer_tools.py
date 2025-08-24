@@ -94,7 +94,8 @@ def clarification_tool(
     if target_tool in examples:
         result += f"**Voorbeeld**: {examples[target_tool]}\n\n"
     
-    result += "Kunt u deze informatie aanvullen zodat ik een gerichte zoekopdracht kan uitvoeren?"
+    result += "Kunt u deze informatie aanvullen zodat ik een gerichte zoekopdracht kan uitvoeren?\n\n"
+    result += "STOP: Waiting for user clarification. Use send_email_tool to ask for more information."
     
     return result
 
@@ -149,7 +150,7 @@ def search_kamerleden(
                 result += f"- {naam_volledig} ({functie_str})\n"
             return result
         else:
-            return "STOP: Ask user for more specific criteria. Send Email to user."
+            return "STOP: This completes the search. Use this information to provide your final answer. Ask user for more specific criteria. Send Email to user."
 
     except requests.RequestException as e:
         return f"Fout bij ophalen Kamerleden: {str(e)}"
@@ -209,7 +210,7 @@ def get_kamerstukken(
                 result += f"- {onderwerp} ({soort_str}) - {datum}\n"
             return result
         else:
-            return f"STOP: Ask user for more specific criteria. Send Email to user."
+            return f"STOP: This completes the search. Use this information to provide your final answer. Ask user for more specific criteria. Send Email to user."
 
     except requests.RequestException as e:
         return f"Fout bij ophalen kamerstukken: {str(e)}"
@@ -270,7 +271,7 @@ def search_vergaderingen(
                 result += f"- {onderwerp} ({soort}) - {begin_formatted}\n"
             return result
         else:
-            return "STOP: Ask user for more specific criteria. Send Email to user."
+            return "STOP: This completes the search. Use this information to provide your final answer. Ask user for more specific criteria. Send Email to user."
 
     except requests.RequestException as e:
         return f"Fout bij ophalen vergaderingen: {str(e)}"
@@ -327,7 +328,7 @@ def get_stemmingen(
                 result += f"- {soort}: {onderwerp} - {datum}\n"
             return result
         else:
-            return "STOP: Ask user for more specific criteria. Send Email to user."
+            return "STOP: This completes the search. Use this information to provide your final answer. Ask user for more specific criteria. Send Email to user."
 
     except requests.RequestException as e:
         return f"Fout bij ophalen stemmingen: {str(e)}"
@@ -379,7 +380,7 @@ def search_commissies(
                 result += f"- {naam_nl} ({soort}) - Ingesteld: {ingesteld}\n"
             return result
         else:
-            return "STOP: Ask user for more specific criteria. Send Email to user."
-            
+            return "STOP: This completes the search. Use this information to provide your final answer. Ask user for more specific criteria. Send Email to user."
+
     except requests.RequestException as e:
         return f"Fout bij ophalen commissies: {str(e)}"

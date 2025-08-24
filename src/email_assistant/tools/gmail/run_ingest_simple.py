@@ -1,26 +1,34 @@
 #!/usr/bin/env python
 """
-Simple Gmail ingestion script based directly on test.ipynb that works with LangSmith tracing.
+Simplified Gmail ingestion script - LangGraph server execution with proper store management.
 
-This script provides a minimal implementation for ingesting emails to the LangGraph server,
-with reliable LangSmith tracing.
-
-CONVERTED TO SYNC EXECUTION to avoid async concurrency issues that cause OpenAI 400 errors.
+This script uses LangGraph server for Agent Inbox integration while avoiding async concurrency issues.
 """
 
 import base64
 import json
-import uuid
-import hashlib
 import argparse
 import os
-import time
+import sys
+import uuid
+import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from langgraph_sdk import get_sync_client
 from dotenv import load_dotenv
+
+load_dotenv()
+
+# Setup paths
+_ROOT = Path(__file__).parent.absolute()
+_SECRETS_DIR = _ROOT / ".secrets"
+TOKEN_PATH = _SECRETS_DIR / "token.json"
+# Import the workflow components and rebuild with store
+from email_assistant.email_assistant_tweedekamer import overall_workflow
+# Also import memory store for proper workflow execution
+from langgraph.store.memory import InMemoryStore
 
 load_dotenv()
 
@@ -61,16 +69,7 @@ def extract_message_part(payload):
     return ""
 
 def load_gmail_credentials():
-    """
-    Load Gmail credentials from token.json or environment variables.
-    
-    This function attempts to load credentials from multiple sources in this order:
-    1. Environment variables GMAIL_TOKEN
-    2. Local file at token_path (.secrets/token.json)
-    
-    Returns:
-        Google OAuth2 Credentials object or None if credentials can't be loaded
-    """
+    """Load Gmail credentials from token.json or environment variables."""
     token_data = None
     
     # 1. Try environment variable
@@ -129,84 +128,97 @@ def extract_email_data(message):
     
     # Create email data object
     email_data = {
-        "from_email": from_email,
-        "to_email": to_email,
+        "from": from_email,
+        "to": to_email,
         "subject": subject,
-        "page_content": content,
+        "body": content,
         "id": message['id'],
-        "thread_id": message['threadId'],
-        "send_time": date
+        "thread_id": message['threadId']
     }
     
     return email_data
 
-def ingest_email_to_langgraph(email_data, graph_name, url="http://127.0.0.1:2024"):
-    """Ingest an email to LangGraph (SYNC version)."""
-    # Connect to LangGraph server using sync client
-    client = get_sync_client(url=url)
+def process_single_email(email_data, graph_name, url="http://127.0.0.1:2024"):
+    """Process a single email via LangGraph server with proper store management."""
+    print(f"Processing email: {email_data['subject']}")
+    print(f"From: {email_data['from']}")
     
-    # Create a consistent UUID for the thread
-    raw_thread_id = email_data["thread_id"]
-    thread_id = str(
-        uuid.UUID(hex=hashlib.md5(raw_thread_id.encode("UTF-8")).hexdigest())
-    )
-    print(f"Gmail thread ID: {raw_thread_id} → LangGraph thread ID: {thread_id}")
-    
-    thread_exists = False
     try:
-        # Try to get existing thread info
-        thread_info = client.threads.get(thread_id)
-        thread_exists = True
-        print(f"Found existing thread: {thread_id}")
-    except Exception as e:
-        # If thread doesn't exist, create it
-        print(f"Creating new thread: {thread_id}")
-        thread_info = client.threads.create(thread_id=thread_id)
-    
-    # If thread exists, clean up previous runs
-    if thread_exists:
+        # Connect to LangGraph server using sync client
+        client = get_sync_client(url=url)
+        
+        # Create a consistent UUID for the thread
+        raw_thread_id = email_data["thread_id"]
+        thread_id = str(
+            uuid.UUID(hex=hashlib.md5(raw_thread_id.encode("UTF-8")).hexdigest())
+        )
+        print(f"Gmail thread ID: {raw_thread_id} → LangGraph thread ID: {thread_id}")
+        
+        thread_exists = False
         try:
-            # List all runs for this thread
-            runs = client.runs.list(thread_id)
-            
-            # Delete all previous runs to avoid state accumulation
-            for run_info in runs:
-                run_id = run_info.id
-                print(f"Deleting previous run {run_id} from thread {thread_id}")
-                try:
-                    client.runs.delete(thread_id, run_id)
-                except Exception as e:
-                    print(f"Failed to delete run {run_id}: {str(e)}")
+            # Try to get existing thread info
+            thread_info = client.threads.get(thread_id)
+            thread_exists = True
+            print(f"Found existing thread: {thread_id}")
         except Exception as e:
-            print(f"Error listing/deleting runs: {str(e)}")
-    
-    # Update thread metadata with current email ID
-    client.threads.update(thread_id, metadata={"email_id": email_data["id"]})
-    
-    # Create a fresh run for this email
-    print(f"Creating run for thread {thread_id} with graph {graph_name}")
-    
-    run = client.runs.create(
-        thread_id,
-        graph_name,
-        input={"email_input": {
-            "from": email_data["from_email"],
-            "to": email_data["to_email"],
-            "subject": email_data["subject"],
-            "body": email_data["page_content"],
-            "id": email_data["id"]
-        }},
-        config={"recursion_limit": 10,
-                "max_concurrency": 1},  # Increased from 10 to 50
-        multitask_strategy="rollback",
-    )
-    
-    print(f"Run created successfully with thread ID: {thread_id}")
-    
-    return thread_id, run
+            # If thread doesn't exist, create it
+            print(f"Creating new thread: {thread_id}")
+            thread_info = client.threads.create(thread_id=thread_id)
+        
+        # If thread exists, clean up previous runs to avoid state conflicts
+        if thread_exists:
+            try:
+                # List all runs for this thread
+                runs = client.runs.list(thread_id)
+                
+                # Delete all previous runs to avoid state accumulation
+                for run_info in runs:
+                    # Handle both dict and object responses safely
+                    if isinstance(run_info, dict):
+                        run_id = run_info.get('id')
+                    else:
+                        run_id = getattr(run_info, 'id', None)
+                    
+                    # Only try to delete if we have a valid run ID
+                    if run_id:
+                        print(f"Deleting previous run {run_id} from thread {thread_id}")
+                        try:
+                            client.runs.delete(thread_id, run_id)
+                        except Exception as e:
+                            print(f"Failed to delete run {run_id}: {str(e)}")
+                    else:
+                        print(f"Skipping run with invalid ID: {run_info}")
+            except Exception as e:
+                print(f"Error listing/deleting runs: {str(e)}")
+        
+        # Update thread metadata with current email ID
+        client.threads.update(thread_id, metadata={"email_id": email_data["id"]})
+        
+        # Create a fresh run for this email - SEQUENTIAL EXECUTION to avoid async conflicts
+        print(f"Creating run for thread {thread_id} with graph {graph_name}")
+        
+        run = client.runs.create(
+            thread_id,
+            graph_name,
+            input={"email_input": email_data},
+            config={
+                "recursion_limit": 10,  # Increased for tool call spiraling
+                "max_concurrency": 1,   # Force single-threaded execution
+            }
+        )
+        
+        print(f"✅ Email processing initiated successfully with thread ID: {thread_id}")
+        print(f"🔗 Check Agent Inbox for HITL interactions")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error processing email: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def fetch_and_process_emails(args):
-    """Fetch emails from Gmail and process them through LangGraph (SYNC version)."""
+    """Fetch emails from Gmail and process them via LangGraph server."""
     # Load Gmail credentials
     credentials = load_gmail_credentials()
     if not credentials:
@@ -215,9 +227,6 @@ def fetch_and_process_emails(args):
         
     # Build Gmail service
     service = build("gmail", "v1", credentials=credentials)
-    
-    # Process emails
-    processed_count = 0
     
     try:
         # Get messages from the specified email address
@@ -228,8 +237,6 @@ def fetch_and_process_emails(args):
         
         # Add time constraint if specified
         if args.minutes_since > 0:
-            # Calculate timestamp for filtering
-            from datetime import timedelta
             after = int((datetime.now() - timedelta(minutes=args.minutes_since)).timestamp())
             query += f" after:{after}"
             
@@ -249,17 +256,13 @@ def fetch_and_process_emails(args):
             
         print(f"Found {len(messages)} emails")
         
-        # Process each email SEQUENTIALLY (not parallel) to avoid async conflicts
+        # Process each email SEQUENTIALLY via LangGraph server
+        processed_count = 0
         for i, message_info in enumerate(messages):
             # Stop early if requested
             if args.early and i > 0:
                 print(f"Early stop after processing {i} emails")
                 break
-                
-            # Check if we should reprocess this email
-            if not args.rerun:
-                # TODO: Add check for already processed emails
-                pass
                 
             # Get the full message
             message = service.users().messages().get(userId="me", id=message_info["id"]).execute()
@@ -267,33 +270,32 @@ def fetch_and_process_emails(args):
             # Extract email data
             email_data = extract_email_data(message)
             
-            print(f"\nProcessing email {i+1}/{len(messages)}:")
-            print(f"From: {email_data['from_email']}")
-            print(f"Subject: {email_data['subject']}")
+            print(f"\n--- Processing email {i+1}/{len(messages)} ---")
             
-            # Ingest to LangGraph (SYNC)
-            thread_id, run = ingest_email_to_langgraph(
-                email_data, 
-                args.graph_name,
-                url=args.url
-            )
+            # Process the email via LangGraph server
+            success = process_single_email(email_data, args.graph_name, args.url)
             
-            processed_count += 1
+            if success:
+                processed_count += 1
+                
+            # Small delay between emails to avoid any potential conflicts
+            print(f"Waiting 3 seconds before next email...")
+            import time
+            time.sleep(3)
             
-            # Add a small delay between emails to prevent any race conditions
-            print(f"Waiting 2 seconds before next email...")
-            time.sleep(2)
-            
-        print(f"\nProcessed {processed_count} emails successfully")
+        print(f"\n✅ Initiated processing for {processed_count}/{len(messages)} emails")
+        print(f"🔗 Check LangGraph UI and Agent Inbox for progress and HITL interactions")
         return 0
         
     except Exception as e:
-        print(f"Error processing emails: {str(e)}")
+        print(f"❌ Error processing emails: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Simple Gmail ingestion for LangGraph with reliable tracing")
+    parser = argparse.ArgumentParser(description="Simplified Gmail ingestion - LangGraph server execution")
     
     parser.add_argument(
         "--email", 
@@ -310,7 +312,7 @@ def parse_args():
     parser.add_argument(
         "--graph-name", 
         type=str, 
-        default="email_assistant_hitl_memory_gmail",
+        default="tweedekamer_assistant",
         help="Name of the LangGraph to use"
     )
     parser.add_argument(
@@ -329,21 +331,11 @@ def parse_args():
         action="store_true",
         help="Include emails that have already been read"
     )
-    parser.add_argument(
-        "--rerun", 
-        action="store_true",
-        help="Process the same emails again even if already processed"
-    )
-    parser.add_argument(
-        "--skip-filters",
-        action="store_true",
-        help="Skip filtering of emails"
-    )
     return parser.parse_args()
 
 if __name__ == "__main__":
     # Get command line arguments
     args = parse_args()
     
-    # Run the script (SYNC version - no more asyncio.run)
+    # Run the simplified script
     exit(fetch_and_process_emails(args))
