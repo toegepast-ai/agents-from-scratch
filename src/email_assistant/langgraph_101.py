@@ -26,7 +26,7 @@ def run_tool(state: MessagesState) -> MessagesState:
     result = []
     for tool_call in state["messages"][-1].tool_calls:
         observation = write_email.invoke(tool_call["args"])
-        result.append({"role": "tool", "content": observation, "tool_call_id": tool_call["id"]})
+        result.append({"role": "tool", "name": tool_call["name"], "content": observation, "tool_call_id": tool_call["id"]})
     return {"messages": result}
 
 def should_continue(state: MessagesState) -> Literal["run_tool", "__end__"]:

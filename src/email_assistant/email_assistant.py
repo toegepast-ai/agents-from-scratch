@@ -53,7 +53,7 @@ def tool_node(state: State):
     for tool_call in state["messages"][-1].tool_calls:
         tool = tools_by_name[tool_call["name"]]
         observation = tool.invoke(tool_call["args"])
-        result.append({"role": "tool", "content" : observation, "tool_call_id": tool_call["id"]})
+        result.append({"role": "tool", "name": tool_call["name"], "content": observation, "tool_call_id": tool_call["id"]})
     return {"messages": result}
 
 # Conditional edge function

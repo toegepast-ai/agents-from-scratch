@@ -197,7 +197,7 @@ def interrupt_handler(state: State) -> Command[Literal["llm_call", "__end__"]]:
             # Execute search_memory and other tools without interruption
             tool = tools_by_name[tool_call["name"]]
             observation = tool.invoke(tool_call["args"])
-            result.append({"role": "tool", "content": observation, "tool_call_id": tool_call["id"]})
+            result.append({"role": "tool", "name": tool_call["name"], "content": observation, "tool_call_id": tool_call["id"]})
             continue
             
         # Get original email from email_input in state
@@ -253,7 +253,7 @@ def interrupt_handler(state: State) -> Command[Literal["llm_call", "__end__"]]:
             # Execute the tool with original args
             tool = tools_by_name[tool_call["name"]]
             observation = tool.invoke(tool_call["args"])
-            result.append({"role": "tool", "content": observation, "tool_call_id": tool_call["id"]})
+            result.append({"role": "tool", "name": tool_call["name"], "content": observation, "tool_call_id": tool_call["id"]})
                         
         elif response["type"] == "edit":
 

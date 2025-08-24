@@ -194,6 +194,7 @@ async def ingest_email_to_langgraph(email_data, graph_name, url="http://127.0.0.
             "body": email_data["page_content"],
             "id": email_data["id"]
         }},
+        config={"recursion_limit": 10},
         multitask_strategy="rollback",
     )
     
